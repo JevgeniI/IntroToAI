@@ -1,0 +1,252 @@
+print("Begin program")
+
+#!/usr/bin/python3
+import ev3dev.ev3 as ev3
+import signal
+from time import sleep
+
+# Sensors and motors ------------------------------------------------
+mRight = ev3.LargeMotor('outA')
+mLeft = ev3.LargeMotor('outB')
+
+lightSensorLeft = ev3.ColorSensor('in2')
+lightSensorRight = ev3.ColorSensor('in1') # Values between 0 and 100
+
+intersectSensor = ev3.LightSensor('in3')  # Values between 100 and 600
+
+# Use constants to later acces motor speeds and sensor thresholds  ---------------------------------------------
+THRESHOLD_LEFT = 50 
+THRESHOLD_RIGHT = 50
+INTERSECT = 300
+
+BASE_SPEED = 30 #30   #30
+TURN_SPEED = 40 #40   #80
+
+PTERM = 0.5 #0.9
+ITERM = 0.1
+
+# Earlier values for the integral term for both motors ---------------------------------
+global val1L
+global val2L
+val1L = 0
+val2L = 0
+val3L = 0
+val4L = 0
+val5L = 0
+
+val1R = 0
+val2R = 0
+val3R = 0
+val4R = 0
+val5R = 0
+
+
+# Check if the motors are connected
+assert mRight.connected, "MotorRight is not conected"
+assert mLeft.connected, "MotorLeft is not conected"
+
+assert lightSensorLeft.connected, "LightSensorLeft is not connected"
+assert lightSensorRight.connected, "LightSensorRight is not conected"
+
+assert intersectSensor.connected, "intersectionSensor not connected"
+
+print("Everything connected succesfully")
+sleep(1)
+
+# Set the motor mode
+mLeft.run_direct()
+mRight.run_direct()
+
+mRight.polarity = "inversed"
+mLeft.polarity = "inversed"
+
+# The example doesn't end on its own.
+# Use CTRL-C to exit it (needs command line).
+# This is a generic way to be informed
+# of this event and then take action.
+def signal_handler(sig, frame):
+	print('Shutting down gracefully')
+	mRight.duty_cycle_sp = 0
+	mLeft.duty_cycle_sp = 0
+
+	exit(0)
+
+# Install the signal handler for CTRL+C
+signal.signal(signal.SIGINT, signal_handler)
+print('Press Ctrl+C to exit')
+
+# Functions ------------------------------------
+
+# To read the value of the sensor
+def readSensor(nameOfSensor):
+	if nameOfSensor == "right":
+		return lightSensorRight.value()
+	if nameOfSensor == "left":
+		return lightSensorLeft.value()
+	else:
+		return intersectSensor.value()
+
+
+# Update drivespeed with the inputs: right = 0 and left = 1
+def updateDriveSpeed():
+	if readSensor("left") < THRESHOLD_LEFT:
+		mRight.duty_cycle_sp = TURN_SPEED
+	else:
+		mRight.duty_cycle_sp = BASE_SPEED
+	
+	if readSensor("right") < THRESHOLD_RIGHT:
+		mLeft.duty_cycle_sp = TURN_SPEED
+	else:
+		mLeft.duty_cycle_sp = BASE_SPEED
+
+
+# Update drivespeed using a PI controller
+def PID():
+	global val2L
+	global val1L
+	leftSens = readSensor("left")
+	rightSens = readSensor("right")
+	print("left ", leftSens, " right ", rightSens)
+	error = (rightSens-leftSens)
+	integralError = val2L + val1L + error
+	newSpeed = int(BASE_SPEED + (abs(error) * PTERM) + (integralError*ITERM) + 0.5) 
+	print("error", error)
+	if error == 0:
+		mLeft.duty_cycle_sp = BASE_SPEED
+		mRight.duty_cycle_sp = BASE_SPEED
+	elif error > 0:
+		print(BASE_SPEED + (abs(error) * PTERM)+ 0.5)
+		mLeft.duty_cycle_sp = BASE_SPEED-5
+		if newSpeed < 100:
+			mRight.duty_cycle_sp = newSpeed
+		else:
+			mRight.duty_cycle_sp =100
+	else:
+		print(BASE_SPEED + (abs(error) * PTERM)+ 0.5)
+		mRight.duty_cycle_sp = BASE_SPEED-5
+		if newSpeed < 100:
+			mLeft.duty_cycle_sp = newSpeed
+		else:
+			mLeft.duty_cycle_sp = 100
+
+	val2L = val1L
+	val1L = error
+	
+# Update drivespeed using a PI controller  #Alternate
+def APID():
+	global val2L
+	global val1L
+	leftSens = readSensor("left")
+	rightSens = readSensor("right")
+	
+	error = (rightSens-leftSens)
+	integralError = val2L + val1L + error
+	
+	newSpeed = int(BASE_SPEED -(abs(error) * PTERM) - (abs(integralError)*ITERM) + 0.5) 
+	if error == 0:
+		mLeft.duty_cycle_sp = BASE_SPEED
+		mRight.duty_cycle_sp = BASE_SPEED
+	elif error > 0:
+		newSpeed = int(BASE_SPEED -(abs(error) * PTERM) - (abs(integralError)*ITERM) + 0.5) 
+		print('here')
+		mRight.duty_cycle_sp = BASE_SPEED
+		if newSpeed > 0:
+			mLeft.duty_cycle_sp = newSpeed
+		else:
+			mLeft.duty_cycle_sp = 0
+	else:
+		mLeft.duty_cycle_sp = BASE_SPEED
+		if newSpeed > 0:
+			mRight.duty_cycle_sp = newSpeed
+		else:
+			mRight.duty_cycle_sp =0
+	print('error', error, 'left ', leftSens, ' right ', rightSens, ' newSpeed ' , newSpeed ,  ' ' , end='\r')
+
+	val2L = val1L
+	val1L = error
+	
+# Go straight
+def goStraight():
+	#updateDriveSpeed()
+	APID()
+
+
+# Turn 90 degrees
+def turnNinety(sinister):
+	if sinister == 0:
+		mLeft.run_to_rel_pos(position_sp=245, speed_sp=400, stop_action="hold")
+		mRight.run_to_rel_pos(position_sp=-245, speed_sp=400, stop_action="hold")
+		sleep(1)
+	elif sinister ==1:
+		mLeft.run_to_rel_pos(position_sp=-245, speed_sp=400, stop_action="hold")
+		mRight.run_to_rel_pos(position_sp=245, speed_sp=400, stop_action="hold")
+		sleep(1)
+
+# Step into intersection / to move the robot closer to the intersection
+def stepIntoIntersect():
+	mRight.run_to_rel_pos(position_sp=333, speed_sp=400, stop_action="hold")
+	mLeft.run_to_rel_pos(position_sp=333, speed_sp=400, stop_action="hold")
+	sleep(1)
+
+
+# Read from string
+#def readFromString():
+
+
+
+
+
+# Endless loop reading sensors and controlling motors.
+
+	# sensorLeft = lightSensorLeft.value()
+	# sensorRight = lightSensorRight.value()
+
+	# print("sensorLeft: ", sensorLeft, " sensorRight: ", sensorRight)
+	# if sensorRight < THRESHOLD_RIGHT:
+	# 	mRight.duty_cycle_sp = TURN_SPEED
+	# else:
+	# 	mRight.duty_cycle_sp = BASE_SPEED
+	
+
+	# if sensorLeft < THRESHOLD_LEFT:
+	# 	mLeft.duty_cycle_sp = TURN_SPEED
+	# else:
+	# 	mLeft.duty_cycle_sp = BASE_SPEED
+
+
+# Program --------------------------------------
+
+mRight.duty_cycle_sp = BASE_SPEED
+mLeft.duty_cycle_sp = BASE_SPEED
+
+val1L = 0
+val2L = 0
+
+#nn = 1
+
+while True:
+	
+	#print("Go in loop")
+	#print(nn)
+	#nn = nn + 1
+	goStraight()
+	print("readSensor" , readSensor(INTERSECT))
+	if readSensor(INTERSECT) < 300:
+		stepIntoIntersect()
+		turnNinety(1)
+		#print("readSensor" , readSensor(INTERSECT))
+
+		break
+
+		
+	#print("alive")
+
+
+
+print("dead")
+mRight.duty_cycle_sp = 0
+mLeft.duty_cycle_sp = 0
+mRight.stop()
+mLeft.stop()
+
+
